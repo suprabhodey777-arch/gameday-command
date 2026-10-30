@@ -560,6 +560,17 @@ main { min-width: 0; min-height: 0; overflow: auto; padding: 16px 16px 20px 20px
   padding: 7px 14px; border-radius: var(--radius); font-size: 13px; white-space: nowrap; pointer-events: none;
 }
 .alert-banner .muted { color: var(--ink-2); }
+.warning-banner {
+  position: absolute; top: 96px; left: 50%; transform: translateX(-50%); z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; width: max-content; max-width: min(640px, calc(100% - 32px));
+  background: var(--paper); color: var(--ink); border-left: 6px solid var(--warn);
+  padding: 8px 10px 8px 14px; border-radius: var(--radius); font-size: 13px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.3);
+}
+.warning-banner.now { border-left-color: var(--stop); }
+.warning-banner span { flex: 1 1 220px; min-width: 0; }
+.warning-banner strong { font-family: Overpass, sans-serif; white-space: nowrap; color: var(--warn); }
+.warning-banner.now strong { color: var(--stop); }
 
 /* ── Layered 2D maps, HUD chips ─────────────────────────────────── */
 .maps-stack { position: relative; width: 100%; touch-action: none; user-select: none; cursor: grab; }
@@ -952,3 +963,20 @@ kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px soli
 }
 
 .copy-summary { margin: 0 0 10px; }
+
+/* ── My plans (saved in this browser) ───────────────────────────── */
+.saved-plans-save { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.saved-plans-save label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.saved-plans-save input { flex: 1 1 140px; min-width: 0; }
+.saved-plans-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.saved-plans-list li { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); }
+.saved-name { display: grid; gap: 2px; }
+.saved-name em { font-style: normal; font-size: 12px; color: var(--ink-2); }
+.saved-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+button.small.quiet { background: transparent; border-color: var(--rule); color: var(--ink-2); }
+
+/* ── What-if: before and after a different call ─────────────────── */
+.what-if { border-left: 5px solid var(--alert); }
+.what-if-table td em { display: block; font-style: normal; font-size: 12px; color: var(--ink-2); }
+.what-if-table td.better em { color: var(--go, #00704a); font-weight: 600; }
+.what-if-table td.worse em { color: var(--stop); font-weight: 600; }
