@@ -18,7 +18,9 @@ import { CommandPanel, Ranking } from './CommandPanel.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
 import { CommandBar } from './CommandBar.tsx';
 import { liveRows, resultRows, summaryText } from './scoreboard.ts';
-import { lastUndoable } from './after-action.ts';
+import { lastUndoable, timeline } from './after-action.ts';
+import { reportHtml } from './report.ts';
+import { whatIfRows, whatIfSentence, type WhatIfBaseline } from './whatif.ts';
 import { describeUndo } from './voice-answers.ts';
 import { StartScreen } from './StartScreen.tsx';
 import { applyTheme } from './theme.ts';
@@ -32,7 +34,7 @@ import {responseTargets, dispatchSuggestions} from './suggestions.ts';
 import {DemoAccess} from './DemoAccess.tsx';
 import {OfficerConsole} from './OfficerConsole.tsx';
 import {readRole,saveRole,type DemoRole} from './roles.ts';
-import { PolicePanel, type PolicePickMode } from './PolicePanel.tsx';
+import { describeOrder, PolicePanel, type PolicePickMode } from './PolicePanel.tsx';
 import { barricadeAt, fenceAt } from './barricade.ts';
 import { stepStatus } from './live-steps.ts';
 import { rgbCss, shirtColor, STATE_RGB } from './people.ts';
@@ -41,6 +43,8 @@ import { wallClock } from './dayclock.ts';
 import { HOTSPOT_COLOUR, policeHotspots, standingDensity, type PoliceHotspot } from './congestion.ts';
 import { bandTotals, heatBands, hotspots, makePlaceIndex, type Hotspot } from './heat.ts';
 import { useRun, type RunHandle, type RunInit } from './useRun.ts';
+import { EarlyWarnings, type EarlyWarning } from './early-warning.ts';
+import { SavedPlansPanel } from './SavedPlansPanel.tsx';
 import { vehicleIcon } from './vehicleArt.ts';
 
 /** One seed for every plan in a comparison: the whole point is the same crowd. */
@@ -327,6 +331,84 @@ function AlertBanner({ run, plan, incidentAt }: { run: RunHandle; plan: Response
     <div className="alert-banner">
       <strong>{how}</strong> reached {(last.dots.length * DOT_GROUP_SIZE).toLocaleString()} fans
       {alert?.message && <span className="muted"> “{alert.message}”</span>}
+    </div>
+  );
+}
+
+/** How long an early warning stays over the map, in sim seconds. */
+const WARNING_BANNER_S = 180;
+/** Warnings start this long before the incident, so a rush building toward it is caught. */
+const WARN_FROM_S = 600;
+
+/** Before and after a what-if, for every plan, with the one sentence that matters on top. */
+function WhatIfPanel({ whatIf, labels, cards, changed, allDone, onDrop }: { whatIf: WhatIfBaseline; labels: readonly string[]; cards: (Scorecard | null)[]; changed: number[]; allDone: boolean; onDrop: () => void }) {
+  const after = cards.filter((c): c is Scorecard => c !== null);
+  return (
+    <section className="block what-if">
+      <h2>What-if from {clockText(whatIf.t)}</h2>
+      {!allDone ? (
+        <p className="muted">
+          {changed.length === 0
+            ? 'Make a different call now: give an order from the Orders tab or by voice, then play on. The results from before are kept to compare.'
+            : `New orders on plan ${changed.map((i) => labels[i]).join(' and ')}. Play on to see what they change.`}
+        </p>
+      ) : (
+        <>
+          <p className="verdict-line">{whatIfSentence(labels, changed, whatIf.cards, after)}</p>
+          <table className="scoreboard what-if-table" aria-label="Each plan before and after the what-if">
+            <thead>
+              <tr>
+                <th scope="col">After the change</th>
+                {labels.map((l) => (
+                  <th key={l} scope="col"><span className="label">{l}</span></th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {whatIfRows(whatIf.cards, after).map((r) => (
+                <tr key={r.label}>
+                  <th scope="row" title={r.hint}>{r.label}</th>
+                  {r.cells.map((c, i) => (
+                    <td key={i} className={c.better === true ? 'better' : c.better === false ? 'worse' : undefined} title={`Before: ${c.before}`}>
+                      {c.after}
+                      <em>{c.change === 'same' ? 'same' : `${c.change}, was ${c.before}`}</em>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+      <button className="small quiet" onClick={onDrop}>
+        Drop the what-if
+      </button>
+    </section>
+  );
+}
+
+/** Says a warning aloud when read-back is on; never talks over the command box. */
+function speakWarning(text: string) {
+  try {
+    if (localStorage.getItem('gd-readback') === 'off') return;
+  } catch {
+    /* storage blocked: read-back defaults on */
+  }
+  const synth = globalThis.speechSynthesis;
+  if (!synth || synth.speaking) return;
+  synth.speak(new SpeechSynthesisUtterance(`Warning. ${text}`));
+}
+
+/** What is about to turn critical on the plan on the map, from the trend of its own numbers. */
+function WarningBanner({ warning, t, onDismiss }: { warning: EarlyWarning | null; t: number; onDismiss: () => void }) {
+  if (!warning || t - warning.t > WARNING_BANNER_S || t < warning.t) return null;
+  return (
+    <div className={`warning-banner ${warning.stage}`} role="status">
+      <strong>{warning.stage === 'now' ? 'Critical' : `Critical in ~${warning.minutes} min`}</strong>
+      <span>{warning.text}</span>
+      <button className="small" onClick={onDismiss} aria-label="Dismiss warning">
+        Dismiss
+      </button>
     </div>
   );
 }
@@ -884,6 +966,78 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standing, loaded, placeIndex]);
 
+  // Early warnings: once a sim minute, each plan's gate queues and packed areas
+  // go through a trend line; the plan on the map shows and says what is coming.
+  const warners = useRef([new EarlyWarnings(), new EarlyWarnings(), new EarlyWarnings()]);
+  const [warnings, setWarnings] = useState<(EarlyWarning | null)[]>([null, null, null]);
+  useEffect(() => {
+    (window as unknown as { gamedayWarnings?: unknown }).gamedayWarnings = { trackers: warners.current, warnings };
+  }, [warnings]);
+  // A what-if keeps the finished results from before a rewind; any order given
+  // at or after that moment is new, since the rewind dropped the old ones.
+  const [whatIf, setWhatIf] = useState<WhatIfBaseline | null>(null);
+  useEffect(() => setWhatIf(null), [generation, incidentIndex]);
+  const whatIfChanged = whatIf ? runs.flatMap((run, i) => ((run.scene.current?.orders ?? []).some((o) => o.t >= whatIf.t) ? [i] : [])) : [];
+
+  /** Every warning each plan raised, for the after-action report. */
+  const warningLog = useRef<EarlyWarning[][]>([[], [], []]);
+  useEffect(() => {
+    warners.current.forEach((w) => w.reset());
+    warningLog.current = [[], [], []];
+    setWarnings([null, null, null]);
+  }, [generation, incidentIndex]);
+  useEffect(() => {
+    if (!loaded || scrub !== null) return;
+    runs.forEach((run, i) => {
+      const scene = run.scene.current;
+      if (!scene || scene.t % 60 !== 0 || (incident && scene.t < incident.at - WARN_FROM_S)) return;
+      const raised = warners.current[i]!.observe({
+        t: scene.t,
+        gates: scene.gates.map((g) => ({ name: loaded.map.places[g.place]?.name ?? 'A gate', open: g.open, waiting: g.waiting, capacityPerMin: g.capacityPerMin })),
+        areas: (police[i] ?? []).filter((h) => h.kind !== 'traffic').map((h) => ({ where: h.where, level: h.level, crowdedPeople: h.crowdedPeople, stoppedVehicles: h.stoppedVehicles })),
+      });
+      // A rewind replays the moments after it; keep only the warnings before.
+      warningLog.current[i] = [...warningLog.current[i]!.filter((w) => w.t < scene.t), ...raised];
+      const top = raised[0];
+      if (!top) return;
+      setWarnings((prev) => prev.map((p, j) => (j === i ? top : p)));
+      if (i === closeRun && playing) speakWarning(top.text);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [police]);
+
+  /** Opens the whole comparison as a printable page in a new tab. */
+  const openReport = () => {
+    if (!loaded || !incident) return;
+    const finished = cards.filter((c): c is Scorecard => c !== null);
+    const names = planStates.map((p) => p.plan.name);
+    const page = window.open('', '_blank');
+    if (!page) return;
+    page.document.write(
+      reportHtml({
+        stadium: loaded.map.name.replace(/ \+ 0\.5 mi$/, ''),
+        situation: INCIDENT_LABELS[incident.kind],
+        summary: pitchFor(incident, zoneName).replace(/ Which plan.*$/, ''),
+        made: new Date().toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
+        conditions: `${weatherTimeline(weatherId).label}, the same for all three plans. ${traffic ? 'Traffic simulated.' : 'No traffic.'}`,
+        plans: planStates.map((state, i) => {
+          const scene = runs[i]!.scene.current;
+          const officers = scene?.officers ?? [];
+          return {
+            label: LABELS[i]!,
+            name: state.plan.name,
+            steps: applyDisabled(state.plan, state.disabled).actions.map((a) => `${minutes(a.at)}: ${describeAction(a, loaded.map)}`),
+            timeline: timeline(scene, (order) => describeOrder(order, loaded.map, officers), (id) => officers.find((o) => o.id === id)?.unit ?? 'A unit'),
+            warnings: warningLog.current[i]!.map((w) => ({ clock: clockText(w.t), text: w.text })),
+          };
+        }),
+        rows: allDone ? resultRows(finished) : [],
+        verdict: allDone ? verdictText(LABELS, names, finished, zoneName) : null,
+      }),
+    );
+    page.document.close();
+  };
+
   const liveScene = runs[closeRun]!.scene.current;
   const suggestedTargets = loaded ? responseTargets(loaded.map, police[closeRun] ?? [], incident, liveScene?.t, runs[closeRun]!.latest.current?.frame.vehicles) : [];
   const requests=(liveScene?.orders??[]).flatMap(e=>e.order.type==='officer_report'?[e.order]:[]).filter(e=>!liveScene?.orders?.some(d=>(d.order.type==='respond'||d.order.type==='report_decision')&&d.order.reportId===e.reportId));
@@ -1341,6 +1495,9 @@ export function App() {
                   </div>
                 )}
                 {view === 'close' && <Legend />}
+                {view !== 'compare' && runs[closeRun] && scrub === null && (
+                  <WarningBanner warning={warnings[closeRun] ?? null} t={runs[closeRun]!.t} onDismiss={() => setWarnings((prev) => prev.map((p, j) => (j === closeRun ? null : p)))} />
+                )}
                 {view === 'close' && runs[closeRun] && planStates[closeRun] && (
                   <AlertBanner run={runs[closeRun]!} plan={applyDisabled(planStates[closeRun]!.plan, planStates[closeRun]!.disabled)} incidentAt={incident?.at ?? 0} />
                 )}
@@ -1456,7 +1613,7 @@ export function App() {
                   <>
                     <button
                       className="small"
-                      title="Rewind the simulations themselves to this moment and play on from here"
+                      title={allDone ? 'Go back to this moment, make a different call, and compare the result with what happened' : 'Rewind the simulations themselves to this moment and play on from here'}
                       onClick={() => {
                         // Rewind the simulations themselves, not just the picture:
                         // each worker restores its nearest checkpoint and steps
@@ -1464,14 +1621,17 @@ export function App() {
                         const at = scrub;
                         const frame = runs.map((r) => r.frames.current?.[at]).find((f) => f !== undefined);
                         if (!frame) return;
+                        // From finished results this is a what-if: keep them to compare.
+                        if (allDone && !whatIf) setWhatIf({ t: frame.frame.t, cards: cards as Scorecard[] });
                         setPlaying(false);
                         setBriefing(null);
                         setSavedComparison(null);
                         for (const run of runs) run.seekTo(frame.frame.t);
                         setScrub(null);
+                        if (allDone) setRailTab('orders');
                       }}
                     >
-                      Play on from here
+                      {allDone ? 'Try a different call from here' : 'Play on from here'}
                     </button>
                     <button onClick={() => setScrub(null)} className="small">
                       Back to live
@@ -1626,6 +1786,7 @@ export function App() {
 
             {railTab === 'plans' && (
               <>
+                {whatIf && <WhatIfPanel whatIf={whatIf} labels={LABELS} cards={cards} changed={whatIfChanged} allDone={allDone} onDrop={() => setWhatIf(null)} />}
                 {loaded && incident && planStates.length === 3 && started && (
                   <PlanScoreboard runs={runs} map={loaded.map} incident={incident} labels={LABELS} cards={cards} allDone={allDone} />
                 )}
@@ -1658,6 +1819,9 @@ export function App() {
                           )
                         }
                       />
+                      <button className="small copy-summary" onClick={() => openReport()} title="One page with the verdict, results, every plan's steps, warnings and orders. Print it or save it as a PDF.">
+                        After-action report
+                      </button>
                       {briefingBusy && <p className="muted">Writing the commander's briefing…</p>}
                       {briefing && (
                         <details className="briefing" open={!briefing.canned}>
@@ -1719,6 +1883,18 @@ export function App() {
                     </button>
                   )}
                 </section>
+                {loaded && incident && planStates.length === 3 && (
+                  <SavedPlansPanel
+                    mapId={loaded.map.id}
+                    kind={incident.kind}
+                    labels={LABELS}
+                    plans={planStates}
+                    onLoad={(slot, plan) => {
+                      setPlanStates((prev) => prev.map((p, j) => (j === slot ? { plan, disabled: new Set<number>() } : p)));
+                      setPlansDirty(true);
+                    }}
+                  />
+                )}
               </>
             )}
 
