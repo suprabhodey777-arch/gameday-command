@@ -1,6 +1,7 @@
 import type { MapBundle } from '../../contracts.ts';
 import { stepChoices, type Choice } from './plan-steps.ts';
 import { findChoice, normalise, parseCommand, planSwitch, type Parsed } from './voice-commands.ts';
+import { rephrase, rephrasedByRule } from './voice-rephrase.ts';
 
 /**
  * Everything the command box can hear, not just orders: a yes or no to the
@@ -96,7 +97,29 @@ function question(s: string, map: MapBundle): Question | null {
   return null;
 }
 
+/**
+ * What was said, understood as it was said or, failing that, as everyday
+ * speech rewritten into a command (`rephrase`). The rewrite still goes through
+ * the same parser and the order is still confirmed, so it can widen what is
+ * understood but never act on a guess.
+ */
 export function parseUtterance(text: string, map: MapBundle): Utterance {
+  const again = rephrase(text);
+  const changed = normalise(again) !== normalise(text);
+  const understood = (u: Utterance) => u.type !== 'order' || u.parsed.ok;
+  // A specific everyday pattern ("tell fans at gate 2 to use gate 1") wins over
+  // a looser reading of the same words (an announcement saying "at gate 2…").
+  if (changed && rephrasedByRule(text)) {
+    const second = parseExactly(again, map);
+    if (understood(second)) return second;
+  }
+  const first = parseExactly(text, map);
+  if (understood(first) || !changed) return first;
+  const second = parseExactly(again, map);
+  return understood(second) ? second : first;
+}
+
+function parseExactly(text: string, map: MapBundle): Utterance {
   const s = normalise(text).replace(/:/g, ' ').replace(/\s+/g, ' ').trim();
   if (CONFIRM.test(s)) return { type: 'confirm' };
   if (CANCEL.test(s)) return { type: 'cancel' };

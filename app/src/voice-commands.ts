@@ -66,6 +66,26 @@ const gateNumber = (label: string) => {
  * other name needs its distinctive words ("woody hayes" for Woody Hayes Drive)
  * to all be there, and the longest such name wins.
  */
+/** Edits between two words, stopping once past `max`. */
+function editDistance(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    if (Math.min(...row) > max) return max + 1;
+    prev = row;
+  }
+  return prev[b.length]!;
+}
+
+/**
+ * Whether a name's word was said, allowing a dictation slip in a long word:
+ * one letter in five or more ("hays" for Hayes), two in eight or more.
+ */
+const saidWord = (said: string[], w: string) =>
+  said.includes(w) || (w.length >= 5 && !/^\d+$/.test(w) && said.some((x) => x.length >= 4 && editDistance(x, w, w.length >= 8 ? 2 : 1) <= (w.length >= 8 ? 2 : 1)));
+
 export function findChoice(text: string, choices: Choice[]): Choice | null {
   const said = words(text);
   const gate = /\bgate (\d+)\b/.exec(normalise(text));
@@ -81,10 +101,11 @@ export function findChoice(text: string, choices: Choice[]): Choice | null {
     const key = name.filter((w) => !FILLER.has(w));
     // "West Lane Avenue" is all filler words: then only the compass word may be left out.
     const need = key.length ? key : name.filter((w) => !COMPASS.has(w));
-    const hit = need.filter((w) => said.includes(w)).length;
+    const hit = need.filter((w) => saidWord(said, w)).length;
     // Every distinctive word, or at least two of three ("northeast lot" for Stadium Lot Northeast).
     if (need.length === 0 || (hit < need.length && (hit < 2 || hit / need.length < 0.66))) continue;
-    const score = hit * 10 + (hit === need.length ? 5 : 0) + name.filter((w) => said.includes(w)).length;
+    // Exact words outrank a slip, so "hayes" never loses to a name it is one letter from.
+    const score = hit * 10 + (hit === need.length ? 5 : 0) + name.filter((w) => said.includes(w)).length * 2;
     if (!best || score > best.score) best = { c, score };
   }
   return best?.c ?? null;

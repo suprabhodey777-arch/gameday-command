@@ -77,7 +77,7 @@ describe('spoken answers', () => {
   it('says when there is nothing to report, rather than guessing', () => {
     expect(answer({ kind: 'worst_gate' }, { ...facts, started: false })).toContain('not started');
     expect(answer({ kind: 'congested' }, { ...facts, hotspots: [] })).toBe('On plan A, nothing is congested right now.');
-    expect(answer({ kind: 'help' }, { ...facts, started: false })).toContain('close gate 3');
+    expect(answer({ kind: 'help' }, { ...facts, started: false })).toContain('we need backup at gate 2');
   });
 
   it('describes an undo', () => {
