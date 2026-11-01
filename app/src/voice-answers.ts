@@ -34,7 +34,7 @@ const NOT_YET = 'The plans have not started yet. Say “run the plans” first.'
 
 export function answer(q: Question, facts: Facts): string {
   if (q.kind === 'help') {
-    return 'Try: close gate 3, send 4 officers to gate 2, PA: use gate 1, shift to plan B, run the plans, show 2D, what is the worst gate, or undo that.';
+    return 'Talk normally. For example: we need backup at gate 2, shut down gate 3, move people from gate 1 to gate 5, tell everyone to use the west gates, shift to plan B, how is gate 2 looking, any problems, or undo that.';
   }
   if (!facts.started) return NOT_YET;
   const free = facts.officers.filter((o) => o.state === 'standby' || o.state === 'patrolling').length;
